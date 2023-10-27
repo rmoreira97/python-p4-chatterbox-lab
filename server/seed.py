@@ -10,8 +10,8 @@ from models import db, Message
 fake = Faker()
 
 usernames = [fake.first_name() for i in range(4)]
-if "Duane" not in usernames:
-    usernames.append("Duane")
+if "Rafa" not in usernames:
+    usernames.append("Rafa")
 
 def make_messages():
 
