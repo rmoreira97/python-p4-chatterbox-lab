@@ -1,105 +1,72 @@
-from flask import Flask, request, make_response, jsonify
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
 from flask_socketio import SocketIO, emit
-from datetime import datetime
+from os import urandom
+
+from models import db, Message
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = 'PibCRONMHEDlWbcVzEgCOD1y9Gy9Nc7W'  # Replace with your secret key
+app.config['SECRET_KEY'] = urandom(24)  # Generates a random 24-byte long secret key
+
+
 CORS(app)
-socketio = SocketIO(app)
+migrate = Migrate(app, db)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-db = SQLAlchemy(app)
+db.init_app(app)
 
-class Message(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    body = db.Column(db.String(255), nullable=False)
-    username = db.Column(db.String(255), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.now)
-    updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
+@app.route('/messages', methods=['GET', 'POST'])
+def messages():
+    if request.method == 'GET':
+        all_messages = Message.query.all()
+        return jsonify([message.serialize() for message in all_messages])
+    elif request.method == 'POST':
+        data = request.json
+        new_message = Message(body=data['body'], username=data['username'])
+        db.session.add(new_message)
+        db.session.commit()
+        socketio.emit('new_message', new_message.serialize(), broadcast=True)
+        return jsonify(new_message.serialize()), 201
+@app.route('/messages/<int:message_id>', methods=['PUT', 'DELETE'])
+def handle_message(message_id):
+    message = Message.query.get(message_id)
+    if not message:
+        return jsonify({"error": "Message not found"}), 404
 
-    def serialize(self):
-        return {
-            'id': self.id,
-            'body': self.body,
-            'username': self.username,
-            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-            'updated_at': self.updated_at.strftime('%Y-%m-%d %H:%M:%S')
-        }
+    if request.method == 'PUT':
+        data = request.json
+        message.body = data['body']
+        db.session.commit()
+        socketio.emit('update_message', message.serialize(), broadcast=True)
+        return jsonify(message.serialize())
 
-@app.get('/messages')
-def get_messages():
-    msgs = Message.query.order_by(Message.created_at).all()
-    body = [m.serialize() for m in msgs]
-    return body, 200
+    elif request.method == 'DELETE':
+        db.session.delete(message)
+        db.session.commit()
+        socketio.emit('delete_message', message.id, broadcast=True)
+        return jsonify({"message": "Deleted successfully"}), 200
+@app.route('/messages/<int:message_id>', methods=['DELETE'])
+def delete_message(message_id):
+    message = Message.query.get(message_id)
+    if not message:
+        return jsonify({"error": "Message not found"}), 404
 
-@app.post('/messages')
-def post_messages():
-    msg_data = request.get_json()
-    if 'body' not in msg_data or 'username' not in msg_data:
-        return make_response(jsonify({"error": "Body and username are required"}), 400)
-
-    new_msg = Message(
-        body=msg_data.get('body'),
-        username=msg_data.get('username')
-    )
-    db.session.add(new_msg)
+    db.session.delete(message)
     db.session.commit()
+    socketio.emit('delete_message', message.id, broadcast=True)
+    return jsonify({"message": "Deleted successfully"}), 200
 
-    # Emit the new message to all connected clients
-    emit('new_message', new_msg.serialize(), broadcast=True)
 
-    return new_msg.serialize(), 201
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
 
-@app.delete('/messages/<int:id>')
-def delete_message(id):
-    msg = Message.query.filter(Message.id == id).first()
-
-    if msg is None:
-        return {'message': 'message not found'}, 404
-
-    db.session.delete(msg)
-    db.session.commit()
-
-    return {}, 200
-
-@app.patch('/messages/<int:id>')
-def patch_message(id):
-    msg = Message.query.filter(Message.id == id).first()
-
-    if msg is None:
-        return {'message': 'message not found'}, 404
-
-    msg_data = request.get_json()
-
-    for field in msg_data:
-        setattr(msg, field, msg_data[field])
-
-    db.session.add(msg)
-    db.session.commit()
-
-    return msg.serialize(), 200
-
-@app.route('/messages/<int:id>')
-def messages_by_id(id):
-    msg = Message.query.filter(Message.id == id).first()
-
-    if msg is None:
-        return {'message': 'message not found'}, 404
-
-    return msg.serialize(), 200
-
-@socketio.on('message')
-def handle_message(data):
-    # Save the message to the database
-    new_msg = Message(body=data['body'], username=data['username'])
-    db.session.add(new_msg)
-    db.session.commit()
-
-    # Emit the new message to all connected clients
-    emit('new_message', new_msg.serialize(), broadcast=True)
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
 
 if __name__ == '__main__':
-    socketio.run(app, port=5000)
+    socketio.run(app, port=5555)
